@@ -4,3 +4,9 @@ planning_async.md
 
 *.toml
 
+# yes, im using love2d to run this
+main.lua
+conf.lua
+
+inspect.lua
+

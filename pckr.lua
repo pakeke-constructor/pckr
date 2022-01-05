@@ -8,6 +8,8 @@ local pairs = pairs
 local getmetatable = getmetatable
 local setmetatable = setmetatable
 
+local rawget = rawget
+
 local type = type
 local concat = table.concat
 
@@ -55,12 +57,14 @@ local STRING_REF_LEN = 4 -- strings must be at least X chars long
 
 local TABLE_WITH_META = "\246" -- (type_name,  table // flat-table // array )
 
+-- These are all the possible table headers
 local ARRAY   = "\247" -- (just values)
-local FLAT_TABLE = "\258"
+local TEMPLATE = "\248"
 local TABLE   = "\249" -- (table data; must use `pairs` to serialize)
+
 local TABLE_END = "\250" -- NULL terminator for tables.
 
-
+-- TODO: do these types
 local USER_TYPE = "\251" -- totally custom type for user.
 -- i.e. there must be custom serialization for these objects.
 
@@ -77,23 +81,40 @@ local PREFIX = ">!1"
 
 
 
+
+
+-- unique values for equality checks
+local UNIQUE_TABLE_END = {}
+local UNIQUE_TABLE = {}
+local UNIQUE_TEMPLATE = {}
+
+
+
+
+
+
 local pckr = {}
 
 
 
-local function get_ser_funcs(type, is_bytedata)
+local function get_ser_funcs(type_, is_bytedata)
     local container = "string"
     if is_bytedata then
         container = is_bytedata
     end
-    local format = PREFIX .. type
+    local format = PREFIX .. type_
 
     local ser = function(data)
         return pack(container, format, data)
     end
 
     local deser = function(data)
-        return pcall(unpack, format, data)
+        local no_err, val, errstr = pcall(unpack, format, data)
+        if no_err then
+            return val
+        else
+            return nil, errstr
+        end
     end
 
     return ser, deser
@@ -109,7 +130,6 @@ local deserializers = {}
 local mt_to_name = {} -- metatable --> name_str
 local name_to_mt = {} -- name_str --> metatable
 local mt_to_template = {} -- metatable --> template
-local mt_to_arraybool = {} -- metatable --> is array? (boolean)
 
 
 function pckr.register_type(metatable, name)
@@ -132,7 +152,6 @@ function pckr.unregister_type(metatable, name)
         mt_to_name[mt] = nil
 
         mt_to_template[mt] = nil
-        mt_to_arraybool[mt] = nil
     end
 end
 
@@ -141,7 +160,6 @@ function pckr.unregister_all()
     name_to_mt = {}
     mt_to_name = {}
     mt_to_template = {}
-    mt_to_arraybool = {}
 end
 
 
@@ -204,6 +222,7 @@ local function push(buffer, x)
     buffer.len = newlen
 end
 
+
 local function push_ref(buffer, ref_num)
     push(buffer, REF)
     serializers.number(buffer, ref_num)
@@ -213,8 +232,8 @@ end
 local function serialize_raw(buffer, x)
     push(buffer, TABLE)
     for k,v in pairs(x) do
-        serializers[type(k)](k)
-        serializers[type(v)](v)
+        serializers[type(k)](buffer, k)
+        serializers[type(v)](buffer, v)
     end
     push(buffer, TABLE_END)
 end
@@ -224,7 +243,7 @@ local function push_array_to_buffer(buffer, x)
     -- `x` is array
     push(buffer, ARRAY)
     for i=1, #x do
-        serializers[type(x[i])](x[i])
+        serializers[type(x[i])](buffer, x[i])
     end
     -- TABLE_END shouldn't be pushed here.
 end
@@ -233,45 +252,54 @@ end
 
 --[[     anatomy:
 
-TABLE_WITH_META type_str OR metatable  <TABLE_DATA>
+`ARRAY`  --> denotes a list of values. <val1, val2, ...>
+`TEMPLATE`  --> denotes a templates type.  <typename, val1, val2, val3, ...>
+`TABLE` --> denotes a key-val relation:  <key1, val1, key2, val2, ...>
 
-TABLE
--- Make sure to push ref before you start!
-<key, value> <key value> ...  TABLE_END
 
-ARRAY 
-<value> <value> <value> ...  TABLE_END
+possible types:
 
-FLAT_TABLE
-<type string>  <value> <value> ... TABLE_END
+`TABLE_WITH_META` <meta> `ARRAY` <arr_data> `TABLE` <table_data> TABLE_END
+`TABLE_WITH_META` <meta> `ARRAY` <arr_data> `TEMPLATE` <table_data> TABLE_END
+`TABLE_WITH_META` <meta> `TABLE` <data> TABLE_END
+`TABLE_WITH_META` <meta> `TEMPLATE` <data> TABLE_END
+note that template can't have regular keys afterwards
+
 ]]
-local function serialize_with_meta(buffer, x, meta)
+
+local function serialize_mt_header(buffer, meta)
     assert(type(meta) == "table", "`meta` not a table..?")
     local name = mt_to_name[meta]
-    
-    push(buffer, TABLE_WITH_META)
     if name then
         serializers.string(buffer, name)
     else
         serializers.table(buffer, meta)
     end
 
+end
+
+
+local function serialize_with_meta(buffer, x, meta)
+    push(buffer, TABLE_WITH_META)
+
+    serialize_mt_header(buffer, meta) -- serializes metatable OR string name
+
+    if rawget(x, 1) then
+        push_array_to_buffer(buffer, x)
+    end
+
     if mt_to_template[meta] then
-        push(buffer, FLAT_TABLE)
+        push(buffer, TEMPLATE)
         local template = mt_to_template[meta]
         for i=1, #template do
             local k = template[i]
             local val = x[k]
-            serializers[type(val)](val)
+            serializers[type(val)](buffer, val)
         end
-        push(buffer, TABLE_END)
-    elseif mt_to_arraybool[meta] then
-        -- then it's just an array- no template
-        push_array_to_buffer(buffer, x)
         push(buffer, TABLE_END)
     else
         -- gonna have to serialize normally, oh well
-        serialize_raw(x)
+        serialize_raw(buffer, x)
     end
 end
 
@@ -286,10 +314,11 @@ function serializers.table(buffer, x)
         if meta then
             serialize_with_meta(buffer, x, meta)
         else
-            serialize_raw(x)
+            serialize_raw(buffer, x)
         end
     end
 end
+
 
 serializers["nil"] = function(buffer, _)
     push(buffer, NIL)
@@ -303,6 +332,7 @@ local sU64, dU64 = get_ser_funcs("I8")
 local sI32, dI32 = get_ser_funcs("i4")
 local sI64, dI64 = get_ser_funcs("i8")
 local sN, dN = get_ser_funcs("n")
+
 
 function serializers.number(buffer, x)
     if floor(x) == x then
@@ -371,8 +401,9 @@ deserializers
 
 local function popn(reader, n)
     local i = reader.index
+    local data = reader.data
     reader.index = i + n
-    if reader:len() >= i + n then
+    if data:len() >= i + n then
         return reader.data:sub(i, i + n)
     else
         return nil, "data string too short"
@@ -384,6 +415,10 @@ end
 local function pull(reader)
     local i = reader.index
     local ccode = byte(reader.data, i)
+    local chr = sub(reader.data, i, i)
+    
+    --print("pull:  ",chr:byte(1,1)) -- TODO: remove this ghost comment
+    
     if ccode <= USMALL_NUM then
         deserializers[USMALL](reader)
     end
@@ -443,15 +478,15 @@ local size_NUMBER = love.data.getPackedSize(PREFIX .. "n") -- i forgot size :P
 deserializers[NUMBER] = make_number_deserializer(dN, size_NUMBER)
 
 
-deserializers[NIL] = function(re)
+deserializers[NIL] = function(_)
     return nil
 end
 
-deserializers[TRUE] = function(re)
+deserializers[TRUE] = function(_)
     return true
 end
 
-deserializers[FALSE] = function(re)
+deserializers[FALSE] = function(_)
     return false
 end
 
@@ -459,8 +494,8 @@ end
 local format_STRING = PREFIX .. "z"
 deserializers[STRING] = function(re)
     -- null terminated string
-    local res, i = pcall(unpack, format_STRING, re.data, re.index)
-    if res then
+    local no_err, res, i = pcall(unpack, format_STRING, re.data, re.index)
+    if no_err then
         if STRING_REF_LEN >= res:len() then
             -- then we put as a ref
             pull_ref(re, res)
@@ -468,23 +503,17 @@ deserializers[STRING] = function(re)
         re.index = i
         return res
     else
-        return nil, i -- `i` is error string here.
+        return nil, res -- `res` is error string here.
     end
 end
 
 
 
 
-deserializers[TABLE_WITH_META] = function(re)
-    --[[
-        format is like this:
-        TABLE_WITH_META (metatable or string)
-        FLAT_TABLE (this means there is a template)
-        ARRAY (this means we treat as array)        
-    ]]
+local function read_meta_header(re)
     local val, err = pull(re)
     if err then
-        return nil, err
+        return nil, tostring(err)
     end
 
     local meta
@@ -496,12 +525,120 @@ deserializers[TABLE_WITH_META] = function(re)
     if type(meta) ~= "table" then
         return nil, "after TABLE_WITH_META, there needs to be a string or table."
     end
+    return meta
+end
+
+
+deserializers[TABLE_WITH_META] = function(re)
+    --[[
+        format is like this:
+        TABLE_WITH_META (metatable or string)
+        FLAT_TABLE (this means there is a template)
+        ARRAY (this means we treat as array)        
+    ]]
+    local meta, err = read_meta_header(re)
+    if not meta then
+        return nil, err
+    end
 
     local tabl = pull(re)
     if type(tabl) ~= "table" then
         return nil, "TABLE_WITH_META requires the following sig: [str or metatab], [table] "
     end
     return setmetatable(tabl, meta)
+end
+
+
+
+deserializers[ARRAY] = function(re, mt_or_nil)
+    -- Remember for an array: 
+    -- TABLE, TEMPLATE, or TABLE_END could all follow!
+    -- We must account for that; `ARRAY` should automatically pull these extra
+    -- headers.
+    local tabl = {}
+    local tinsert = table.insert
+
+    while true do
+        local x, err = pull(re)
+        if err then
+            return nil, err
+        end
+        if x == UNIQUE_TABLE then
+            return deserializers[TABLE](re, tabl, mt_or_nil)
+        end
+        if x == UNIQUE_TEMPLATE then
+            return deserializers[TEMPLATE](re, tabl, mt_or_nil)
+            -- don't worry about `mt_or_nil` being nil, `TEMPLATE` deserializer will handle this
+        end
+        if x == UNIQUE_TABLE_END then
+            return tabl
+        end
+        tinsert(tabl, x)
+    end
+end
+
+
+
+deserializers[TABLE] = function(re, tab_or_nil)
+    local tab = tab_or_nil or {}
+
+    while true do
+        local key, er1 = pull(re)
+        if er1 or (key == nil) then
+            return nil, er1
+        end
+
+        if key == UNIQUE_TABLE_END then
+            return tab
+        else
+            local val, er2 = pull(re)
+            if er2 then
+                return nil, er2
+            end
+            tab[key] = val
+        end
+    end
+end
+
+
+
+deserializers[TEMPLATE] = function(re, meta, tabl_or_nil)
+    if not (meta) then
+        return nil, "deserializers[TEMPLATE] didn't pass in meta!"
+    end
+
+    local templ = mt_to_template[meta]
+    if not (templ) then
+        return nil, "deserializers[TEMPLATE]: No template for metatable type!"
+    end
+
+    local tabl = tabl_or_nil or {}
+    local i = 1
+    local len = #templ
+
+    while i <= len do
+        local x, err = pull(re)
+        if err then
+            return nil, err
+        end
+        local key = templ[i]
+        tabl[key] = x
+        i = i + 1
+    end
+
+    local x, err = pull(re)
+    if x ~= UNIQUE_TABLE_END then
+        -- we don't *really* need this here, but it's safer to check.
+        return nil, err
+    end
+
+    return tabl
+end
+
+
+
+deserializers[TABLE_END] = function(_)
+    return UNIQUE_TABLE_END
 end
 
 
@@ -539,7 +676,7 @@ local function newreader(data)
         refs = {count = 0}; -- [ref_num] --> object
         
         data = data;
-        i = 1
+        index = 1
     }
 end
 
@@ -560,7 +697,14 @@ end
 function pckr.deserialize(data)
     local reader = newreader(data)
 
-    while data:len() >= data.index do
+    local DEBUG_I = 1
+    while data:len() >= reader.index do
+
+        DEBUG_I = DEBUG_I + 1
+        if DEBUG_I > 11 then
+            return
+        end
+
         local val = pull(reader)
         table.insert(reader.results, val)
     end
@@ -574,15 +718,18 @@ end
 
 
 
+--[[
+
+TODO FOR FUTURE
 
 function pckr.serialize_async()
-    -- returns `buffer` object
 end
 
 
 function pckr.deserialize_async()
-
 end
 
+]]
 
 
+return pckr

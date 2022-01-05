@@ -38,12 +38,8 @@ namespace: `pckr.low`
 -- sets a template for type keys, so it can be flattened.
 pckr.low.set_template(vector_metatable, {"x", "y", "z"})
 -- (These are the same as binser, except these can't be nested)
--- This means that `pckr` will ONLY serialize these fields
-
-pckr.low.set_array(metatable)
--- tells `pckr` that types under this metatable are an array,
--- and that positive numeric indexes should be serialized.
-
+-- This means that `pckr` won't serialize any other keyed fields, 
+-- (however `pckr` will still serialize the array part)
 
 
 pckr.low.raw_serialize(buffer, x) -- serializes `table` whilst ignoring 
