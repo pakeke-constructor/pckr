@@ -2,19 +2,22 @@
 local pckr = require("pckr")
 
 
-local a = {}
-local b = {a}
-local c = {a=a, b=b}
-c.c = c
+local A = {}
+local B = {A}
+local C = {a=B, b=B}
+C.c = C
 
 
-local dat = pckr.serialize(a, b, c)
+print(inspect(A) .. "\n" .. inspect(B) .. "\n" .. inspect(C))
 
-print(inspect(dat))
+print("\n\n\n")
 
-local A, B, C = pckr.deserialize(dat)
+local dat = pckr.serialize(A, B, C)
 
 
+A, B, C = pckr.deserialize(dat)
 
-print(A, B, C)
+
+print(inspect(A) .. "\n" .. inspect(B) .. "\n" .. inspect(C))
+
 

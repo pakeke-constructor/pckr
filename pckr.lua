@@ -13,6 +13,7 @@ local rawget = rawget
 local type = type
 local concat = table.concat
 
+local table_unpack = unpack
 local unpack = love.data.unpack
 local pack = love.data.pack
 
@@ -26,6 +27,7 @@ local char = string.char
 local sub = string.sub
 
 local pcall = pcall
+
 
 
 
@@ -415,13 +417,10 @@ end
 local function pull(reader)
     local i = reader.index
     local ccode = byte(reader.data, i)
-    local chr = sub(reader.data, i, i)
-    
-    --print("pull:  ",chr:byte(1,1)) -- TODO: remove this ghost comment
-    
     if ccode <= USMALL_NUM then
-        deserializers[USMALL](reader)
+        return deserializers[USMALL](reader)
     end
+
     local chr = sub(reader.data, i, i)
     local fn = deserializers[chr]
     if not fn then
@@ -432,6 +431,7 @@ local function pull(reader)
     if err then
         return nil, err
     end
+    
     return val
 end
 
@@ -556,6 +556,7 @@ deserializers[ARRAY] = function(re, mt_or_nil)
     -- We must account for that; `ARRAY` should automatically pull these extra
     -- headers.
     local tabl = {}
+    pull_ref(re, tabl)
     local tinsert = table.insert
 
     while true do
@@ -579,8 +580,14 @@ end
 
 
 
-deserializers[TABLE] = function(re, tab_or_nil)
-    local tab = tab_or_nil or {}
+deserializers[TABLE] = function(re, tabl_or_nil)
+    local tabl
+    if tabl_or_nil then
+        tabl = tabl_or_nil
+    else
+        tabl = {}
+        pull_ref(re, tabl)
+    end
 
     while true do
         local key, er1 = pull(re)
@@ -589,13 +596,13 @@ deserializers[TABLE] = function(re, tab_or_nil)
         end
 
         if key == UNIQUE_TABLE_END then
-            return tab
+            return tabl
         else
             local val, er2 = pull(re)
             if er2 then
                 return nil, er2
             end
-            tab[key] = val
+            tabl[key] = val
         end
     end
 end
@@ -612,7 +619,14 @@ deserializers[TEMPLATE] = function(re, meta, tabl_or_nil)
         return nil, "deserializers[TEMPLATE]: No template for metatable type!"
     end
 
-    local tabl = tabl_or_nil or {}
+    local tabl
+    if tabl_or_nil then
+        tabl = tabl_or_nil
+    else
+        tabl = {}
+        pull_ref(re, tabl)
+    end
+    
     local i = 1
     local len = #templ
 
@@ -697,15 +711,11 @@ end
 function pckr.deserialize(data)
     local reader = newreader(data)
 
-    local DEBUG_I = 1
     while data:len() >= reader.index do
-
-        DEBUG_I = DEBUG_I + 1
-        if DEBUG_I > 11 then
-            return
+        local val, err = pull(reader)
+        if err then
+            return nil, err
         end
-
-        local val = pull(reader)
         table.insert(reader.results, val)
     end
 
@@ -713,7 +723,7 @@ function pckr.deserialize(data)
     -- If theres a `nil` value in the middle of the array,
     -- unpack doesn't unpack the whole thing.
     -- (There could be an extra arg to unpack though, so take a look)
-    return unpack(reader.results)
+    return table_unpack(reader.results)
 end
 
 
