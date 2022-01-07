@@ -215,10 +215,18 @@ local function push(buffer, x)
 end
 
 
+
+local function push_ref(buffer, ref_num)
+    push(buffer, REF)
+    serializers.number(buffer, ref_num)
+end
+
+
+
 local function try_push_resource(buffer, res)
     local alias = resource_to_alias[res]
     if alias then
-        push(buffer, RESOURCE) -- pushes raw string
+        push(buffer, RESOURCE)
         serializers[type(alias)](buffer, alias)
         return true
     end
@@ -232,8 +240,6 @@ local function force_push_resource(buffer, x)
     end
 end
 
-
-
 --[[
 =================
     set a default serialization function for unknown types.
@@ -241,11 +247,6 @@ end
 ]]
 setmetatable(serializers, {__index = force_push_resource})
 
-
-local function push_ref(buffer, ref_num)
-    push(buffer, REF)
-    serializers.number(buffer, ref_num)
-end
 
 
 
@@ -420,7 +421,7 @@ deserializers
 local function popn(reader, n)
     local i = reader.index
     local data = reader.data
-    reader.index = i + n
+    reader.index = i + n + 1
     if data:len() >= i + n then
         return reader.data:sub(i, i + n)
     else
@@ -433,6 +434,9 @@ end
 local function pull(reader)
     local i = reader.index
     local ccode = byte(reader.data, i)
+    if not ccode then
+        return nil, "pull(re) ran out of data; (serialization data too short of malformed)"
+    end
     if ccode <= USMALL_NUM then
         return deserializers[USMALL](reader)
     end
@@ -466,8 +470,9 @@ end
 
 
 local function make_number_deserializer(deser_func, n_bytes)
+    local pop_arg = n_bytes - 1
     return function(re)
-        local data, er1 = popn(re, n_bytes)
+        local data, er1 = popn(re, pop_arg)
         if not data then
             return nil, er1
         end
@@ -631,7 +636,7 @@ deserializers[TEMPLATE] = function(re, meta, tabl_or_nil)
     while i <= len do
         local x, err = pull(re)
         if err then
-            return nil, err
+            return nil, "deserializers[TEMPLATE]: " .. err
         end
         local key = templ[i]
         tabl[key] = x
@@ -641,7 +646,7 @@ deserializers[TEMPLATE] = function(re, meta, tabl_or_nil)
     local x, err = pull(re)
     if x ~= UNIQUE_TABLE_END then
         -- we don't *really* need this here, but it's safer to check.
-        return nil, err
+        return nil, "deserializers[TEMPLATE]: " .. err
     end
 
     return tabl
@@ -656,13 +661,16 @@ end
 
 
 deserializers[REF] = function(re)
-    local index = pull(re)
+    local index, er = pull(re)
+    if er then
+        return nil, "deserializers[REF] error - " .. er
+    end
     if type(index) ~= "number" then
-        return nil, "Reference not a number"
+        return nil, "deserializers[REF] - Reference not a number"
     end
     local val = get_ref(re, index)
     if not val then
-        return nil, "Non existant reference: " .. tostring(index)
+        return nil, "deserializers[REF] - Non existant reference: " .. tostring(index)
     end
     return val
 end
@@ -673,9 +681,12 @@ end
 deserializers[RESOURCE] = function(re)
     local alias, er = pull(re)
     if er then
-        return nil, er
+        return nil, "deserializers[RESOURCE] - " .. er
     end
     local val = alias_to_resource[alias]
+    if not val then
+        return nil, "deserializers[RESOURCE] - unknown resource: " .. tostring(alias)
+    end
     return val
 end
 
