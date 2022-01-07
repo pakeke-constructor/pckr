@@ -57,7 +57,7 @@ local STRING = "\242"
 local STRING_REF_LEN = 4 -- strings must be at least X chars long 
                         -- to be counted as a reference.
 
-local TABLE_WITH_META = "\246" -- (type_name,  table // flat-table // array )
+local TABLE_WITH_META = "\246" -- (metatable,  table // flat-table // array )
 
 -- These are all the possible table headers
 local ARRAY   = "\247" -- (just values)
@@ -72,7 +72,7 @@ local USER_TYPE = "\251" -- totally custom type for user.
 
 local BYTEDATA  = "\252" -- (A love2d ByteData; requires special attention with .unpack)
 
-local RESOURCE  = "\253" -- (uint ref)
+local RESOURCE  = "\253" -- (ANY_TYPE alias_ref)
 local REF = "\254" -- (uint ref)
 
 local FUTURE_REF = "\255" -- (uint ref)  (used for async serialization, NYI tho.)
@@ -124,77 +124,58 @@ end
 
 
 
+
+
+local alias_to_resource = {}
+local resource_to_alias = {}
+
+local mt_to_template = {} -- metatable --> template
+
+
+
+
 local serializers = {}
 
 local deserializers = {}
 
 
-local mt_to_name = {} -- metatable --> name_str
-local name_to_mt = {} -- name_str --> metatable
-local mt_to_template = {} -- metatable --> template
 
 
-function pckr.register_type(metatable, name)
-    assert(not name, "Duplicate registered type: " .. tostring(name))
-    name_to_mt[name] = metatable
-    mt_to_name[metatable] = name
+
+
+function pckr.register(resource, alias)
+    assert(alias, "pckr.register(resource, alias): Not given an alias")
+    if type(resource) == "number" or type(resource) == "nil" or
+                                     type(resource) == "boolean" or
+                                     type(resource) == "string" then
+        error("pckr.register(resource, alias): You cannot register bools, numbers, string, or nil.")
+    end
+    alias_to_resource[alias] = resource
+    resource_to_alias[resource] = alias
 end
 
 
-function pckr.unregister_type(metatable, name)
-    local mt = name_to_mt[name]
-    if not mt then -- has no name
-        mt = metatable
-    end
-    
-    if name then
-        name_to_mt[name] = nil
-    end
-    if mt then
-        mt_to_name[mt] = nil
 
-        mt_to_template[mt] = nil
+function pckr.unregister(res_or_alias)
+    if alias_to_resource[res_or_alias] then
+        local res = alias_to_resource
+        alias_to_resource[res_or_alias] = nil
+        resource_to_alias[res] = nil
+        return true
+    elseif resource_to_alias[res_or_alias] then
+        local name = resource_to_alias[res_or_alias]
+        resource_to_alias[res_or_alias] = nil
+        alias_to_resource[name] = nil
+        return true
     end
+    return false
 end
 
 
 function pckr.unregister_all()
-    name_to_mt = {}
-    mt_to_name = {}
     mt_to_template = {}
-end
-
-
-function pckr.register_template(name_or_mt, template)
-    -- Templates must be registered the same!
-    local mt = name_or_mt
-    if type(name_or_mt) == "string" then
-        mt = name_to_mt[name_or_mt] -- assume `name_or_mt` is name
-    end
-    mt_to_template[mt] = template
-end
-
-
-
-function pckr.register_array(name_or_mt)
-    -- registers the given metatable as an array type
-    local mt = name_or_mt
-    if type(name_or_mt) == "string" then 
-        mt = name_to_mt[name_or_mt] -- assume `name_or_mt` is name
-        mt_to_name[mt] = name_or_mt
-    else
-        error("pckr.register_array takes a string")
-    end
-end
-
-
-
-
-local function add_reference(buffer, x)
-    local refs = buffer.refs
-    local new_count = refs.count + 1
-    refs[x] = new_count
-    refs.count = new_count
+    alias_to_resource = {}
+    resource_to_alias = {}
 end
 
 
@@ -216,6 +197,15 @@ Serializers:
 
 ]]
 
+local function add_reference(buffer, x)
+    local refs = buffer.refs
+    local new_count = refs.count + 1
+    refs[x] = new_count
+    refs.count = new_count
+end
+
+
+
 
 local function push(buffer, x)
     -- pushes `x` onto the buffer
@@ -225,10 +215,39 @@ local function push(buffer, x)
 end
 
 
+local function try_push_resource(buffer, res)
+    local alias = resource_to_alias[res]
+    if alias then
+        push(buffer, RESOURCE) -- pushes raw string
+        serializers[type(alias)](buffer, alias)
+        return true
+    end
+    return false
+end
+
+
+local function force_push_resource(buffer, x)
+    if not try_push_resource(buffer, x) then
+        error("Attempt to serialize illegal type: " .. type(x))
+    end
+end
+
+
+
+--[[
+=================
+    set a default serialization function for unknown types.
+=================
+]]
+setmetatable(serializers, {__index = force_push_resource})
+
+
 local function push_ref(buffer, ref_num)
     push(buffer, REF)
     serializers.number(buffer, ref_num)
 end
+
+
 
 
 local function serialize_raw(buffer, x)
@@ -243,6 +262,9 @@ end
 
 local function push_array_to_buffer(buffer, x)
     -- `x` is array
+    if try_push_resource(buffer, x) then
+        return -- then the array is a resource; return.
+    end
     push(buffer, ARRAY)
     for i=1, #x do
         serializers[type(x[i])](buffer, x[i])
@@ -269,22 +291,14 @@ note that template can't have regular keys afterwards
 
 ]]
 
-local function serialize_mt_header(buffer, meta)
-    assert(type(meta) == "table", "`meta` not a table..?")
-    local name = mt_to_name[meta]
-    if name then
-        serializers.string(buffer, name)
-    else
-        serializers.table(buffer, meta)
-    end
-
-end
-
 
 local function serialize_with_meta(buffer, x, meta)
     push(buffer, TABLE_WITH_META)
 
-    serialize_mt_header(buffer, meta) -- serializes metatable OR string name
+    if type(meta) ~= "table" then
+        error("serialize_with_meta(buffer, x, meta): `meta` should be table, but was instead: "..type(meta))
+    end
+    serializers.table(buffer, meta)
 
     if rawget(x, 1) then
         push_array_to_buffer(buffer, x)
@@ -310,6 +324,8 @@ end
 function serializers.table(buffer, x)
     if buffer.refs[x] then
         push_ref(buffer, buffer.refs[x])
+    elseif try_push_resource(buffer, x) then
+        return -- x is a resource. Hooray!
     else
         add_reference(buffer, x)
         local meta = getmetatable(x)
@@ -375,7 +391,7 @@ function serializers.string(buffer, x)
         push(buffer, STRING)
         push(buffer, x)
         push(buffer, "\0") -- remember to push null terminator!
-        -- TODO: Is this null terminator needed? Do testing
+        -- (Yes, I tested it- this null terminator is needed)
         if x:len() >= STRING_REF_LEN then
             add_reference(buffer, x)
         end
@@ -510,40 +526,22 @@ end
 
 
 
-local function read_meta_header(re)
-    local val, err = pull(re)
-    if err then
-        return nil, tostring(err)
-    end
-
-    local meta
-    if type(val) == "string" then
-        meta = name_to_mt[val]
-    else -- it's got to be table
-        meta = val
-    end
-    if type(meta) ~= "table" then
-        return nil, "after TABLE_WITH_META, there needs to be a string or table."
-    end
-    return meta
-end
-
 
 deserializers[TABLE_WITH_META] = function(re)
     --[[
         format is like this:
-        TABLE_WITH_META (metatable or string)
+        TABLE_WITH_META (metatable)
         FLAT_TABLE (this means there is a template)
         ARRAY (this means we treat as array)        
     ]]
-    local meta, err = read_meta_header(re)
+    local meta, err = pull(re)
     if not meta then
         return nil, err
     end
 
     local tabl = pull(re)
     if type(tabl) ~= "table" then
-        return nil, "TABLE_WITH_META requires the following sig: [str or metatab], [table] "
+        return nil, "TABLE_WITH_META requires the following sig: [metatab], [table] "
     end
     return setmetatable(tabl, meta)
 end
@@ -669,6 +667,17 @@ deserializers[REF] = function(re)
     return val
 end
 
+
+
+
+deserializers[RESOURCE] = function(re)
+    local alias, er = pull(re)
+    if er then
+        return nil, er
+    end
+    local val = alias_to_resource[alias]
+    return val
+end
 
 
 

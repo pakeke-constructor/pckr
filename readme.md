@@ -6,21 +6,17 @@ It is very good at serializing large data.
 I'm also aiming for it to be a lot more extensible than other custom serializers.
 
 
+
 # usage:
 
 ```lua
 
--- adds a resource (same as `binser`)
-pckr.resource(resource, name)
+-- registers a resource (same as binser, but you can use any type as alias.)
+pckr.register(resource, alias)
 
+pckr.unregister(resource) -- unregisters resource
 
--- registers metatable as `name`
--- (Great for client - server architecture!)
-pckr.register_metatable(metatable, name)
-
-pckr.unregister_metatable(metatable, name)
-
-
+pckr.unregister_all() -- unregisters all resources
 
 
 
