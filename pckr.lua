@@ -517,7 +517,7 @@ deserializers[STRING] = function(re)
     -- null terminated string
     local no_err, res, i = pcall(unpack, format_STRING, re.data, re.index)
     if no_err then
-        if STRING_REF_LEN >= res:len() then
+        if res:len() >= STRING_REF_LEN then
             -- then we put as a ref
             pull_ref(re, res)
         end
@@ -685,7 +685,7 @@ deserializers[RESOURCE] = function(re)
     end
     local val = alias_to_resource[alias]
     if not val then
-        return nil, "deserializers[RESOURCE] - unknown resource: " .. tostring(alias)
+        return nil, "deserializers[RESOURCE] - unknown resource alias: " .. tostring(alias)
     end
     return val
 end
