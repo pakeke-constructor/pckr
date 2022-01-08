@@ -9,4 +9,5 @@ main.lua
 conf.lua
 
 inspect.lua
-
+other.lua
+notepad.lua

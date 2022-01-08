@@ -23,6 +23,11 @@ local function deep_equal(table1, table2)
           if type(k) == "table" then table.insert(t2tablekeys, k) end
           t2keys[k] = true
        end
+
+       if not recurse(getmetatable(t1), getmetatable(t2)) then
+            return false
+       end
+
        -- Let's iterate keys from t1
        for k1, v1 in pairs(t1) do
           local v2 = t2[k1]
@@ -81,6 +86,11 @@ local function check(tab)
         print("initial: ", inspect(tab))
         print("returned: ", inspect(res))
         error("pckr tests: CHECK FAILED")
+    else
+        print("\n============= PASSED ================")
+        print("initial: ", inspect(tab))
+        print("returned: ", inspect(res))
+        print("============= PASSED ================\n")
     end
 end
 
@@ -134,6 +144,47 @@ check("abcdefs;ofgLKKDDDDDDDDDDDDDDDDDDDLFKDL")
 check({{{{}}}})
 check({1,2,3})
 end
+
+
+
+
+
+do
+    -- TODO: This test is failing:::
+    local b = {b="self ref meta"}
+    setmetatable(b, b)
+    check(b)
+end
+
+
+
+
+do
+    -- TODO: This test is failing:::
+    local b = {b="self ref meta (try 2)"}
+    setmetatable(b, {__index = b})
+    check(b)
+end
+
+
+
+
+do
+    -- This test is also failing:::
+    local a = {b="ekrf"}
+    local b = {b="1"}
+    setmetatable(a, b)
+    --[[
+        I know why as well. it's in the `serialize_with_meta` function-
+        before that function is called, it pushes `b` as a reference.
+        When the serializer goes to serialize the metatable of b, it realizes
+        that b is a reference (because it was pushed previously!!!)
+        This is where the error comes from.
+    ]]
+    check(a)
+end
+
+
 
 
 

@@ -57,7 +57,7 @@ local STRING = "\242"
 local STRING_REF_LEN = 4 -- strings must be at least X chars long 
                         -- to be counted as a reference.
 
-local TABLE_WITH_META = "\246" -- (metatable,  table // flat-table // array )
+local TABLE_WITH_META = "\246" -- ( table // flat-table // array, metatable )
 
 -- These are all the possible table headers
 local ARRAY   = "\247" -- (just values)
@@ -266,13 +266,21 @@ local function push_array_to_buffer(buffer, x)
     if try_push_resource(buffer, x) then
         return -- then the array is a resource; return.
     end
+
     push(buffer, ARRAY)
-    for i=1, #x do
+    local len = #x
+    for i=1, len do
         serializers[type(x[i])](buffer, x[i])
     end
+    return len
     -- TABLE_END shouldn't be pushed here.
 end
 
+local function should_skip(arr_len, key)
+    -- returns whether this key should be skipped because it's in the array
+    return arr_len and type(key) == "number" and 
+                floor(key) == key and key <= arr_len and key > 0
+end
 
 
 --[[     anatomy:
@@ -284,11 +292,11 @@ end
 
 possible types:
 
-`TABLE_WITH_META` <meta> `ARRAY` <arr_data> `TABLE` <table_data> TABLE_END
-`TABLE_WITH_META` <meta> `ARRAY` <arr_data> `TEMPLATE` <table_data> TABLE_END
-`TABLE_WITH_META` <meta> `TABLE` <data> TABLE_END
-`TABLE_WITH_META` <meta> `TEMPLATE` <data> TABLE_END
-note that template can't have regular keys afterwards
+`TABLE_WITH_META`  (`ARRAY` <arr_data> `TABLE` <table_data> TABLE_END)    <meta>
+`TABLE_WITH_META`  (`ARRAY` <arr_data> `TEMPLATE` <table_data> TABLE_END)   <meta>
+`TABLE_WITH_META`  (`TABLE` <data> TABLE_END)    <meta>
+`TABLE_WITH_META`  (`TEMPLATE` <data> TABLE_END)   <meta>
+note that template can't have regular keys afterwards   
 
 ]]
 
@@ -296,13 +304,11 @@ note that template can't have regular keys afterwards
 local function serialize_with_meta(buffer, x, meta)
     push(buffer, TABLE_WITH_META)
 
-    if type(meta) ~= "table" then
-        error("serialize_with_meta(buffer, x, meta): `meta` should be table, but was instead: "..type(meta))
-    end
-    serializers.table(buffer, meta)
-
+    local arr_len = nil
     if rawget(x, 1) then
-        push_array_to_buffer(buffer, x)
+        arr_len = push_array_to_buffer(buffer, x)
+        -- TODO: get the range of fields to ignore for `serialize_raw`;
+        -- else pckr serializes duplicate fields
     end
 
     if mt_to_template[meta] then
@@ -310,14 +316,18 @@ local function serialize_with_meta(buffer, x, meta)
         local template = mt_to_template[meta]
         for i=1, #template do
             local k = template[i]
-            local val = x[k]
-            serializers[type(val)](buffer, val)
+            if not should_skip(arr_len, k) then
+                local val = x[k]
+                serializers[type(val)](buffer, val)
+            end
         end
         push(buffer, TABLE_END)
     else
         -- gonna have to serialize normally, oh well
         serialize_raw(buffer, x)
     end
+
+    serializers.table(buffer, meta)
 end
 
 
@@ -330,7 +340,7 @@ function serializers.table(buffer, x)
     else
         add_reference(buffer, x)
         local meta = getmetatable(x)
-        if meta then
+        if meta and type(meta) == "table" then
             serialize_with_meta(buffer, x, meta)
         else
             serialize_raw(buffer, x)
@@ -536,20 +546,27 @@ deserializers[TABLE_WITH_META] = function(re)
     --[[
         format is like this:
         TABLE_WITH_META (metatable)
-        FLAT_TABLE (this means there is a template)
+        TEMPLATE (this means there is a template)
         ARRAY (this means we treat as array)        
     ]]
-    local meta, err = pull(re)
-    if not meta then
-        return nil, err
+    local tabl, err = pull(re)
+    if err then
+        return nil, "deserializers[TABLE_WITH_META] - " .. err
+    end
+    if type(tabl) ~= "table"then
+        return nil, "TABLE_WITH_META requires the signature: [tabl],[metatab]. `tabl` was of type: " .. type(tabl)
     end
 
-    local tabl = pull(re)
-    if type(tabl) ~= "table" then
-        return nil, "TABLE_WITH_META requires the following sig: [metatab], [table] "
+    local meta, er2 = pull(re)
+    if er2 then
+        return nil, "deserializers[TABLE_WITH_META] - " .. er2
+    end
+    if type(meta) ~= "table"then
+        return nil, "TABLE_WITH_META requires the signature: [tabl],[metatab]. `metatab` was of type: " .. type(meta)
     end
     return setmetatable(tabl, meta)
 end
+
 
 
 
