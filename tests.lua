@@ -73,10 +73,24 @@ assert(not deep_equal(ne, a))
 end
 
 
-local function check(tab)
+local function print_bytes(pre, dat)
+    local res = dat:byte(1,1)
+    for i=2, dat:len() do
+        res = res .. "-" .. dat:byte(i,i)
+    end
+    print(pre, res)
+end
+
+
+local ALL_LOUD = false
+
+local function check(tab, loud)
     local dat = pckr.serialize(tab)
     local res, e = pckr.deserialize(dat)
     if not res then
+        print("ERROR IN DESERIALIZE. ")
+        print("WANTED TO DESERIALIZE THIS: ", inspect(tab))
+        print_bytes("DATA: ", dat)
         error(e)
     end
 
@@ -86,12 +100,19 @@ local function check(tab)
         print("initial: ", inspect(tab))
         print("returned: ", inspect(res))
         error("pckr tests: CHECK FAILED")
-    else
+    elseif loud or ALL_LOUD then
         print("\n============= PASSED ================")
+        print("DATA: ", dat)
         print("initial: ", inspect(tab))
         print("returned: ", inspect(res))
         print("============= PASSED ================\n")
     end
+end
+
+
+do
+local a = {1}
+check(a)
 end
 
 
@@ -117,17 +138,7 @@ pckr.register(A, 1)
 pckr.register(B, "I am the wonderful B!!!!!")
 
 local test1 = {A,B,C,D}
-local dat = pckr.serialize(test1)
-local result1, err = pckr.deserialize(dat)
-if not result1 then
-    error(err)
-end
-
-if not deep_equal(test1, result1) then
-    print(inspect(test1))
-    print(inspect(result1))
-    error("oh shit")
-end
+check(test1)
 end
 
 
@@ -136,6 +147,11 @@ do
 check(58879)
 check(58880)
 check(58881)
+check(-349495)
+check(3409945.34893984)
+check(0.0000034359)
+check(999.92334958)
+check(-5900069.69696239)
 end
 
 
@@ -150,7 +166,6 @@ end
 
 
 do
-    -- TODO: This test is failing:::
     local b = {b="self ref meta"}
     setmetatable(b, b)
     check(b)
@@ -160,7 +175,6 @@ end
 
 
 do
-    -- TODO: This test is failing:::
     local b = {b="self ref meta (try 2)"}
     setmetatable(b, {__index = b})
     check(b)
@@ -170,19 +184,31 @@ end
 
 
 do
-    -- This test is also failing:::
     local a = {b="ekrf"}
     local b = {b="1"}
     setmetatable(a, b)
-    --[[
-        I know why as well. it's in the `serialize_with_meta` function-
-        before that function is called, it pushes `b` as a reference.
-        When the serializer goes to serialize the metatable of b, it realizes
-        that b is a reference (because it was pushed previously!!!)
-        This is where the error comes from.
-    ]]
+    setmetatable(b, a)
+    check({a, b})
+end
+
+
+do
+    local a = {}
+    local b = {}
+    a.a = b
+    b.b = a
+    a.b = a
+    b.a = b
+    check({a,b})
+end
+
+
+
+do
+    local a = {1,2,3,4,5,6}
     check(a)
 end
+
 
 
 

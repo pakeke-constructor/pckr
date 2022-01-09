@@ -31,7 +31,7 @@ local pcall = pcall
 
 
 
-local USMALL = "\230" -- there is another uint8 following this. 
+local USMALL = 230 -- there is another uint8 following this. 
 -- This means that `usmall` can be between 0 - 58880, and only take up 2 bytes!
 local MAX_USMALL = 58880
 local USMALL_NUM = 230
@@ -57,10 +57,12 @@ local STRING = "\242"
 local STRING_REF_LEN = 4 -- strings must be at least X chars long 
                         -- to be counted as a reference.
 
-local TABLE_WITH_META = "\246" -- ( table // flat-table // array, metatable )
+local TABLE_WITH_META = "\244" -- ( table // flat-table // array, metatable )
 
 -- These are all the possible table headers
-local ARRAY   = "\247" -- (just values)
+local ARRAY   = "\246" -- (just values)
+local ARRAY_END = "\247"
+
 local TEMPLATE = "\248"
 local TABLE   = "\249" -- (table data; must use `pairs` to serialize)
 
@@ -83,12 +85,9 @@ local PREFIX = ">!1"
 
 
 
-
-
 -- unique values for equality checks
 local UNIQUE_TABLE_END = {}
-local UNIQUE_TABLE = {}
-local UNIQUE_TEMPLATE = {}
+local UNIQUE_ARRAY_END = {}
 
 
 
@@ -251,16 +250,6 @@ setmetatable(serializers, {__index = force_push_resource})
 
 
 
-local function serialize_raw(buffer, x)
-    push(buffer, TABLE)
-    for k,v in pairs(x) do
-        serializers[type(k)](buffer, k)
-        serializers[type(v)](buffer, v)
-    end
-    push(buffer, TABLE_END)
-end
-
-
 local function push_array_to_buffer(buffer, x)
     -- `x` is array
     if try_push_resource(buffer, x) then
@@ -272,15 +261,35 @@ local function push_array_to_buffer(buffer, x)
     for i=1, len do
         serializers[type(x[i])](buffer, x[i])
     end
+    push(buffer, ARRAY_END)
     return len
-    -- TABLE_END shouldn't be pushed here.
 end
+
 
 local function should_skip(arr_len, key)
     -- returns whether this key should be skipped because it's in the array
     return arr_len and type(key) == "number" and 
                 floor(key) == key and key <= arr_len and key > 0
 end
+
+
+
+local function serialize_raw(buffer, x)
+    local arr_len
+    if rawget(x, 1) then
+        arr_len = push_array_to_buffer(buffer, x)
+    end
+
+    push(buffer, TABLE)
+    for k,v in pairs(x) do
+        if not should_skip(arr_len, k) then
+            serializers[type(k)](buffer, k)
+            serializers[type(v)](buffer, v)
+        end
+    end
+    push(buffer, TABLE_END)
+end
+
 
 
 --[[     anatomy:
@@ -431,11 +440,12 @@ deserializers
 local function popn(reader, n)
     local i = reader.index
     local data = reader.data
-    reader.index = i + n + 1
-    if data:len() >= i + n then
-        return reader.data:sub(i, i + n)
+    reader.index = i + n -- `reader.index` is the index of the NEXT byte to be read.
+    -- i + n - 1 is the index of the most recent byte read.
+    if data:len() >= (i + n - 1) then
+        return reader.data:sub(i, i + n - 1)
     else
-        return nil, "data string too short"
+        return nil, "popn(reader, n): data string too short"
     end
 end
 
@@ -454,7 +464,7 @@ local function pull(reader)
     local chr = sub(reader.data, i, i)
     local fn = deserializers[chr]
     if not fn then
-        return nil, "Serialization char not found: " .. tostring(chr:byte(1,1))
+        return nil, "pull(re): Serialization char not found: " .. tostring(chr:byte(1,1))
     end
     reader.index = i + 1
     local val, err = fn(reader)
@@ -480,9 +490,8 @@ end
 
 
 local function make_number_deserializer(deser_func, n_bytes)
-    local pop_arg = n_bytes - 1
     return function(re)
-        local data, er1 = popn(re, pop_arg)
+        local data, er1 = popn(re, n_bytes)
         if not data then
             return nil, er1
         end
@@ -570,6 +579,11 @@ end
 
 
 
+local ALLOWED_TOKENS_AFTER_ARRAY = {
+    [TABLE] = true;
+    [TEMPLATE] = true
+}
+
 deserializers[ARRAY] = function(re, mt_or_nil)
     -- Remember for an array: 
     -- TABLE, TEMPLATE, or TABLE_END could all follow!
@@ -582,17 +596,18 @@ deserializers[ARRAY] = function(re, mt_or_nil)
     while true do
         local x, err = pull(re)
         if err then
-            return nil, err
+            return nil, "deserializers[ARRAY] - " .. err
         end
-        if x == UNIQUE_TABLE then
-            return deserializers[TABLE](re, tabl, mt_or_nil)
-        end
-        if x == UNIQUE_TEMPLATE then
-            return deserializers[TEMPLATE](re, tabl, mt_or_nil)
-            -- don't worry about `mt_or_nil` being nil, `TEMPLATE` deserializer will handle this
-        end
-        if x == UNIQUE_TABLE_END then
-            return tabl
+        if x == UNIQUE_ARRAY_END then
+            local key, er = popn(re, 1)
+            if er then
+                return nil, "deserializers[ARRAY]: error in popn: " .. er
+            end
+            if not ALLOWED_TOKENS_AFTER_ARRAY[key] then
+                return nil, "deserializers[ARRAY] - malformed token after ARRAY_END: \\" .. tostring(key:byte(1,1))
+            end
+
+            return deserializers[key](re, tabl, mt_or_nil)
         end
         tinsert(tabl, x)
     end
@@ -629,14 +644,14 @@ end
 
 
 
-deserializers[TEMPLATE] = function(re, meta, tabl_or_nil)
+deserializers[TEMPLATE] = function(re, tabl_or_nil, meta)
     if not (meta) then
-        return nil, "deserializers[TEMPLATE] didn't pass in meta!"
+        return nil, "deserializers[TEMPLATE](re, meta, tab_or_nil) didn't pass in meta!"
     end
 
     local templ = mt_to_template[meta]
     if not (templ) then
-        return nil, "deserializers[TEMPLATE]: No template for metatable type!"
+        return nil, "deserializers[TEMPLATE]: No template for metatable type! (make sure it is registered)"
     end
 
     local tabl
@@ -670,6 +685,9 @@ deserializers[TEMPLATE] = function(re, meta, tabl_or_nil)
 end
 
 
+deserializers[ARRAY_END] = function(_)
+    return UNIQUE_ARRAY_END
+end
 
 deserializers[TABLE_END] = function(_)
     return UNIQUE_TABLE_END

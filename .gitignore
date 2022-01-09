@@ -1,5 +1,5 @@
 
-planning_cy.md
+planning.md
 planning_async.md
 
 *.toml
@@ -11,3 +11,6 @@ conf.lua
 inspect.lua
 other.lua
 notepad.lua
+
+temp.py
+
