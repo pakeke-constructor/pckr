@@ -24,9 +24,11 @@ local function deep_equal(table1, table2)
           t2keys[k] = true
        end
 
+       -- (pakeke monkeypatch.)
        if not recurse(getmetatable(t1), getmetatable(t2)) then
             return false
        end
+       -- (pakeke monkeypatch END)
 
        -- Let's iterate keys from t1
        for k1, v1 in pairs(t1) do
@@ -205,7 +207,8 @@ end
 
 
 do
-    local a = {1,2,3,4,5,6}
+    local a = {1,2,3,4,5,6, {{{{}}}}, 2095, 2903.93094}
+    table.insert(a,a)
     check(a)
 end
 

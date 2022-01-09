@@ -18,12 +18,10 @@ local unpack = love.data.unpack
 local pack = love.data.pack
 
 local abs = math.abs
-local max = math.max
-local min = math.min
 local floor = math.floor
 
 local byte = string.byte
-local char = string.char
+local len = string.len
 local sub = string.sub
 
 local pcall = pcall
@@ -257,12 +255,12 @@ local function push_array_to_buffer(buffer, x)
     end
 
     push(buffer, ARRAY)
-    local len = #x
-    for i=1, len do
+    local arr_len = #x
+    for i=1, arr_len do
         serializers[type(x[i])](buffer, x[i])
     end
     push(buffer, ARRAY_END)
-    return len
+    return arr_len
 end
 
 
@@ -412,7 +410,7 @@ function serializers.string(buffer, x)
         push(buffer, x)
         push(buffer, "\0") -- remember to push null terminator!
         -- (Yes, I tested it- this null terminator is needed)
-        if x:len() >= STRING_REF_LEN then
+        if len(x) >= STRING_REF_LEN then
             add_reference(buffer, x)
         end
     end

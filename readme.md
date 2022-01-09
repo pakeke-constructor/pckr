@@ -26,6 +26,12 @@ local a, b, c, d, e = pckr.deserialize(data)
 
 ```
 
+
+# running tests
+run `main.lua` to run the tests.
+
+
+
 ## advanced / low level usage:
 namespace: `pckr.low`
 ```lua
