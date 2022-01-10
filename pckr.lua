@@ -347,7 +347,7 @@ function serializers.table(buffer, x)
     else
         add_reference(buffer, x)
         local meta = getmetatable(x)
-        if meta then
+        if meta and type(meta) == "table" then
             serialize_with_meta(buffer, x, meta)
         else
             serialize_raw(buffer, x)
@@ -552,10 +552,9 @@ end
 deserializers[TABLE_WITH_META] = function(re)
     --[[
         format is like this:
-        TABLE_WITH_META
+        TABLE_WITH_META (metatable)
         TEMPLATE (this means there is a template)
-        ARRAY (this means we treat as array)    
-         (metatable)    
+        ARRAY (this means we treat as array)        
     ]]
     local meta, err = pull(re)
     if err then
@@ -662,9 +661,9 @@ deserializers[TEMPLATE] = function(re, tabl_or_nil, meta)
     end
     
     local i = 1
-    local tlen = #templ
+    local len = #templ
 
-    while i <= tlen do
+    while i <= len do
         local x, err = pull(re)
         if err then
             return nil, "deserializers[TEMPLATE]: " .. err
@@ -752,8 +751,8 @@ end
 function pckr.serialize(...)
     local buffer = newbuffer()
 
-    local arglen = select("#", ...)
-    for i=1, arglen do
+    local len = select("#", ...)
+    for i=1, len do
         local x = select(i, ...)
         serializers[type(x)](buffer, x)
     end
