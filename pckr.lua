@@ -129,11 +129,8 @@ local resource_to_alias = {}
 local mt_to_template = {} -- metatable --> template
 
 
-
-
-local serializers = {}
-
-local deserializers = {}
+local mt_to_custom_serial = {} -- [mt] --> function(buffer, x) -- custom ser.
+local mt_to_custom_deserial = {} -- [mt] --> function(reader, x) -- custom ser
 
 
 
@@ -153,26 +150,77 @@ end
 
 
 
+local function unregister_low(meta)
+    mt_to_template[meta] = nil
+    mt_to_custom_deserial[meta] = nil
+    mt_to_custom_serial[meta] = nil
+end
+
+
+local function get_res_alias(res_or_alias)
+    -- gets resource, alias  tuple with either res or alias.
+    -- returns nil if neither are registered
+    local res, alias
+    if resource_to_alias[res_or_alias] then
+        res = res_or_alias
+        alias = resource_to_alias[res_or_alias]
+    elseif alias_to_resource[res_or_alias] then
+        alias = res_or_alias
+        res = alias_to_resource
+    end
+    return res, alias
+end
+
+
 function pckr.unregister(res_or_alias)
-    if alias_to_resource[res_or_alias] then
-        local res = alias_to_resource
-        alias_to_resource[res_or_alias] = nil
+    if not res_or_alias then
+        error("pckr.unregister expects either a name, resource, or metatable")
+    end
+    local res, alias = get_res_alias(res_or_alias)
+    if alias_to_resource[alias] then
+        alias_to_resource[alias] = nil
         resource_to_alias[res] = nil
-        return true
-    elseif resource_to_alias[res_or_alias] then
-        local name = resource_to_alias[res_or_alias]
-        resource_to_alias[res_or_alias] = nil
-        alias_to_resource[name] = nil
+        unregister_low(res)
         return true
     end
     return false
 end
 
 
+
 function pckr.unregister_all()
     mt_to_template = {}
     alias_to_resource = {}
     resource_to_alias = {}
+
+    mt_to_custom_serial = {}
+    mt_to_custom_deserial = {}
+end
+
+
+-- low level:
+pckr.low = {}
+
+function pckr.low.set_template(res_or_alias, templ)
+    assert(#templ > 0, "pckr: Incorrect template usage. See readme.md")
+    local res, _ = get_res_alias(res_or_alias)
+    assert(res, "pckr.low.set_template(meta, templ) must be used on a registered type!")
+    mt_to_template[res] = templ
+end
+
+
+function pckr.low.set_custom_functions(res_or_alias, ser, deser)
+    if not res_or_alias then
+        error("pckr.low.set_custom_functions: incorrect function signature")
+    end
+    assert(ser and deser, "pckr.low.set_custom_functions(meta, ser, deser) requires functions for serializing AND deserializing")
+    local res, _ = get_res_alias(res_or_alias)
+    if res then
+        mt_to_custom_serial[res] = ser
+        mt_to_custom_deserial[res] = deser
+    else
+        error("pckr.low.set_custom_functions(meta, ser, deser) must be used on a registered type!")
+    end
 end
 
 
@@ -183,6 +231,12 @@ end
 
 
 
+
+
+
+local serializers = {}
+
+local deserializers = {}
 
 
 
@@ -194,7 +248,7 @@ Serializers:
 
 ]]
 
-local function add_reference(buffer, x)
+local function add_ref(buffer, x)
     local refs = buffer.refs
     local new_count = refs.count + 1
     refs[x] = new_count
@@ -242,7 +296,7 @@ end
     set a default serialization function for unknown types.
 =================
 ]]
-setmetatable(serializers, {__index = force_push_resource})
+setmetatable(serializers, {__index = function() return force_push_resource end})
 
 
 
@@ -307,34 +361,51 @@ note that template can't have regular keys afterwards
 
 ]]
 
+local function push_template(buffer, x, meta, arr_len)
+    push(buffer, TABLE)
+    push(buffer, TABLE_END)
+    -- gotta push this to inform deserializer that the metatable isn't
+
+    serializers.table(buffer, meta)
+
+    push(buffer, TEMPLATE)
+    local template = mt_to_template[meta]
+    for i=1, #template do
+        local k = template[i]
+        if not should_skip(arr_len, k) then
+            local val = x[k]
+            serializers[type(val)](buffer, val)
+        end
+    end
+    push(buffer, TABLE_END)
+end
+
+
+local function serialize_user_type(buffer, x, meta)
+    push(buffer, USER_TYPE)
+    local fn = mt_to_custom_serial[meta]
+    try_push_resource(buffer, meta) -- this will always succeed,
+    -- due to the nature of low level registering.
+    -- mt_to_custom_serial[meta] will ALWAYS be nil if `meta` isn't a custom
+    -- resource-- (see low.set_custom_functions)
+    fn(buffer, x, meta)
+end
+
 
 local function serialize_with_meta(buffer, x, meta)
     push(buffer, TABLE_WITH_META)
 
-    local arr_len = nil
-    if rawget(x, 1) then
-        arr_len = push_array_to_buffer(buffer, x)
-        -- TODO: get the range of fields to ignore for `serialize_raw`;
-        -- else pckr serializes duplicate fields
-    end
-
     if mt_to_template[meta] then
-        push(buffer, TEMPLATE)
-        local template = mt_to_template[meta]
-        for i=1, #template do
-            local k = template[i]
-            if not should_skip(arr_len, k) then
-                local val = x[k]
-                serializers[type(val)](buffer, val)
-            end
+        local arr_len = nil
+        if rawget(x, 1) then
+            arr_len = push_array_to_buffer(buffer, x)
         end
-        push(buffer, TABLE_END)
+        push_template(buffer, x, meta, arr_len)
     else
         -- gonna have to serialize normally, oh well
         serialize_raw(buffer, x)
+        serializers.table(buffer, meta)
     end
-
-    serializers.table(buffer, meta)
 end
 
 
@@ -345,10 +416,14 @@ function serializers.table(buffer, x)
     elseif try_push_resource(buffer, x) then
         return -- x is a resource. Hooray!
     else
-        add_reference(buffer, x)
+        add_ref(buffer, x)
         local meta = getmetatable(x)
         if meta then
-            serialize_with_meta(buffer, x, meta)
+            if mt_to_custom_serial[meta] then
+                serialize_user_type(buffer, x, meta)
+            else
+                serialize_with_meta(buffer, x, meta)
+            end
         else
             serialize_raw(buffer, x)
         end
@@ -402,16 +477,22 @@ function serializers.number(buffer, x)
 end
 
 
+--[[
+    STRING
+    <string len>
+    <..... string data ...........>
+]]
 function serializers.string(buffer, x)
     if buffer.refs[x] then
         push_ref(buffer, buffer.refs[x])
     else
         push(buffer, STRING)
+        local slen = len(x)
+        serializers.number(buffer, slen)
         push(buffer, x)
-        push(buffer, "\0") -- remember to push null terminator!
-        -- (Yes, I tested it- this null terminator is needed)
-        if len(x) >= STRING_REF_LEN then
-            add_reference(buffer, x)
+
+        if slen >= STRING_REF_LEN then
+            add_ref(buffer, x)
         end
     end
 end
@@ -440,11 +521,17 @@ local function popn(reader, n)
     local data = reader.data
     reader.index = i + n -- `reader.index` is the index of the NEXT byte to be read.
     -- i + n - 1 is the index of the most recent byte read.
-    if data:len() >= (i + n - 1) then
+    if len(data) >= (i + n - 1) then
         return reader.data:sub(i, i + n - 1)
     else
         return nil, "popn(reader, n): data string too short"
     end
+end
+
+
+local function peek(reader)
+    local i = reader.index
+    return sub(reader.data, i,i)
 end
 
 
@@ -529,19 +616,26 @@ deserializers[FALSE] = function(_)
 end
 
 
-local format_STRING = PREFIX .. "z"
 deserializers[STRING] = function(re)
-    -- null terminated string
-    local no_err, res, i = pcall(unpack, format_STRING, re.data, re.index)
-    if no_err then
-        if res:len() >= STRING_REF_LEN then
+    local string_len, err = pull(re)
+    if err then
+        return nil, "deserializers[STRING] - " .. err
+    end
+    
+    local i = re.index
+    local end_i = i + string_len - 1
+
+    if len(re.data) >= (end_i) then
+        -- then we OK
+        local res = sub(re.data, i, end_i)
+        if len(res) >= STRING_REF_LEN then
             -- then we put as a ref
             pull_ref(re, res)
         end
-        re.index = i
+        re.index = end_i + 1
         return res
     else
-        return nil, res -- `res` is error string here.
+        return nil, "deserializers[STRING]: recieved data does not have enough space to account for this string size: " .. tostring(string_len)
     end
 end
 
@@ -553,9 +647,12 @@ deserializers[TABLE_WITH_META] = function(re)
     --[[
         format is like this:
         TABLE_WITH_META
-        TEMPLATE (this means there is a template)
-        ARRAY (this means we treat as array)    
-         (metatable)    
+        TABLE / ARRAY (...)
+         <<metatable>>
+        TEMPLATE - optional
+
+        The template must be after the metatable, else pckr won't know
+        what the template is!
     ]]
     local tabl, err = pull(re)
     if err then
@@ -572,6 +669,16 @@ deserializers[TABLE_WITH_META] = function(re)
     if type(meta) ~= "table"then
         return nil, "TABLE_WITH_META requires the signature: [tabl],[metatab]. `metatab` was of type: " .. type(meta)
     end
+
+    if peek(re) == TEMPLATE then
+        local er3
+        re.index = re.index + 1
+        tabl, er3 = deserializers[TEMPLATE](re, tabl, meta)
+        if er3 then
+            return nil, er3
+        end
+    end
+
     return setmetatable(tabl, meta)
 end
 
@@ -726,6 +833,63 @@ end
 
 
 
+deserializers[USER_TYPE] = function(re)
+    local meta, er1 = pull(re)
+    if er1 then
+        return nil, "deserializers[USER_TYPE] error in first pull - " .. er1
+    end
+    if type(meta) ~= "table" then
+        return nil, "deserializers[USER_TYPE] - incorrect data signature. Expected [metatab], [<user bytes>], but [metatab] was type: " .. type(meta)
+    end
+
+    local fn = mt_to_custom_deserial[meta]
+    if not fn then
+        return nil, "deserializers[USER_TYPE] - custom USER_TYPE not registered: " .. tostring(meta) .. ". Did you make sure to set serialization functions and register it?"
+    end
+
+    return fn(re, meta)
+end
+
+
+
+-- TODO: Do some thinking about what these functions should actually do.
+pckr.low.serialize_raw = 1-- serialize_raw
+pckr.low.deserialize_raw = 1-- deserializers[TABLE]
+
+pckr.low.push = push
+pckr.low.pull = pull
+
+pckr.low.push_ref = push_ref
+pckr.low.add_ref = add_ref
+
+pckr.low.get_ref = get_ref
+pckr.low.pull_ref = pull_ref
+
+
+pckr.low.I32 = "\234"
+pckr.low.I64 = "\235"
+pckr.low.U32 = "\236"
+pckr.low.U64 = "\237"
+pckr.low.NUMBER = "\238"
+pckr.low.NIL   = "\239"
+pckr.low.TRUE  = "\240"
+pckr.low.FALSE = "\215"
+pckr.low.STRING = "\242"
+pckr.low.STRING_REF_LEN = 4
+pckr.low.TABLE_WITH_META = "\244" -- ( table // flat-table // array, metatable )
+pckr.low.ARRAY   = "\246" -- (just values)
+pckr.low.ARRAY_END = "\247"
+pckr.low.TEMPLATE = "\248"
+pckr.low.TABLE   = "\249" -- (table data; must use `pairs` to serialize)
+pckr.low.TABLE_END = "\250" -- NULL terminator for tables.
+pckr.low.USER_TYPE = "\251" -- totally custom type for user.
+pckr.low.BYTEDATA  = "\252" -- (A love2d ByteData; requires special attention with .unpack)
+pckr.low.RESOURCE  = "\253" -- (ANY_TYPE alias_ref)
+pckr.low.REF = "\254" -- (uint ref)
+pckr.low.FUTURE_REF = "\255" -- (uint ref)  (used for async serialization, NYI tho.)
+
+pckr.low.serializers = serializers
+pckr.low.deserializers = deserializers
 
 
 local function newbuffer()
@@ -782,17 +946,13 @@ end
 
 
 
---[[
-
-TODO FOR FUTURE
+--[[  TODO FOR FUTURE
 
 function pckr.serialize_async()
 end
 
-
 function pckr.deserialize_async()
 end
-
 ]]
 
 

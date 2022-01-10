@@ -50,6 +50,15 @@ pckr.low.raw_serialize(buffer, x) -- serializes `table` whilst ignoring
 
 pckr.low.raw_deserialize(reader, x) -- serializes `x` whilst ignoring custom serializers upon `x`.
 
+-- NOTE: In order for templates and custom serializers to work, 
+-- the metatable must be registered.
+-- This is because if they aren't registered as resources, then upon
+-- deserialization, `pckr` will create a copy of them.
+
+
+
+
+
 pckr.low.set_serialize(metatable, function(buffer) ... end)
 
 pckr.low.set_deserialize(metatable, function(reader) ... end)

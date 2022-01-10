@@ -118,6 +118,15 @@ check(a)
 end
 
 
+
+do
+for i=1, 10 do
+    check(string.rep("r", i))
+end
+end
+    
+
+
 do
 local aa = {}
 local A = {}
@@ -138,7 +147,6 @@ C.c = C
 
 pckr.register(A, 1)
 pckr.register(B, "I am the wonderful B!!!!!")
-
 local test1 = {A,B,C,D}
 check(test1)
 end
@@ -157,6 +165,7 @@ check(-5900069.69696239)
 end
 
 
+
 do
 check("abcdefs;ofgLKKDDDDDDDDDDDDDDDDDDDLFKDL")
 check({{{{}}}})
@@ -168,49 +177,98 @@ end
 
 
 do
-    local b = {b="self ref meta"}
-    setmetatable(b, b)
-    check(b)
+local b = {b="self ref meta"}
+setmetatable(b, b)
+check(b)
 end
 
 
 
 
 do
-    local b = {b="self ref meta (try 2)"}
-    setmetatable(b, {__index = b})
-    check(b)
+local b = {b="self ref meta (try 2)"}
+setmetatable(b, {__index = b})
+check(b)
 end
 
 
 
 
 do
-    local a = {b="ekrf"}
-    local b = {b="1"}
-    setmetatable(a, b)
-    setmetatable(b, a)
-    check({a, b})
+local a = {b="ekrf"}
+local b = {b="1"}
+setmetatable(a, b)
+setmetatable(b, a)
+check({a, b})
 end
 
 
 do
-    local a = {}
-    local b = {}
-    a.a = b
-    b.b = a
-    a.b = a
-    b.a = b
-    check({a,b})
+local a = {}
+local b = {}
+a.a = b
+b.b = a
+a.b = a
+b.a = b
+check({a,b})
 end
 
 
 
 do
-    local a = {1,2,3,4,5,6, {{{{}}}}, 2095, 2903.93094}
-    table.insert(a,a)
-    check(a)
+local a = {1,2,3,4,5,6, {{{{}}}}, 2095, 2903.93094}
+table.insert(a,a)
+check(a)
 end
+
+
+do
+local oop = {"z;kjdfsjild", foo = "Bar"}
+local mt = {__index = oop}
+pckr.register(mt, "mt_checker")
+pckr.low.set_template(mt, {"a", "b", "c"})
+local a = setmetatable({a=30949, b=mt, c=88800.589}, mt)
+check(a)
+pckr.unregister_all()
+end
+
+
+do
+local bigdat = {{{{{{{{{}}}}}}}}}
+pckr.register(bigdat, "a")
+local d = pckr.serialize(bigdat)
+assert(#d < 7, ".register not working") -- compresseion should take about 5 bytes
+pckr.unregister_all()
+local d2 = pckr.serialize(bigdat)
+assert(#d2 > 14, ".unregister not working") -- compression should take more than 14 bytes
+end
+
+
+
+
+do
+local custom_mt = {}
+pckr.register(custom_mt, "custom")
+
+pckr.low.set_custom_functions(custom_mt, function(buffer, x, meta)
+    pckr.low.serializers.number(buffer, 69)
+end,
+function(re, meta)
+    local num, er = pckr.low.pull(re)
+    if er then
+        return nil, er
+    end
+    if num == 69 then
+        return setmetatable({}, meta)
+    end
+end)
+
+local a = setmetatable({}, custom_mt)
+check(a)
+
+pckr.unregister_all()
+end
+
 
 
 
