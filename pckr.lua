@@ -311,6 +311,8 @@ note that template can't have regular keys afterwards
 local function serialize_with_meta(buffer, x, meta)
     push(buffer, TABLE_WITH_META)
 
+    serializers.table(buffer, meta)
+
     local arr_len = nil
     if rawget(x, 1) then
         arr_len = push_array_to_buffer(buffer, x)
@@ -333,8 +335,6 @@ local function serialize_with_meta(buffer, x, meta)
         -- gonna have to serialize normally, oh well
         serialize_raw(buffer, x)
     end
-
-    serializers.table(buffer, meta)
 end
 
 
@@ -557,20 +557,20 @@ deserializers[TABLE_WITH_META] = function(re)
         ARRAY (this means we treat as array)    
          (metatable)    
     ]]
-    local tabl, err = pull(re)
+    local meta, err = pull(re)
     if err then
         return nil, "deserializers[TABLE_WITH_META] - " .. err
     end
-    if type(tabl) ~= "table"then
-        return nil, "TABLE_WITH_META requires the signature: [tabl],[metatab]. `tabl` was of type: " .. type(tabl)
+    if type(meta) ~= "table"then
+        return nil, "TABLE_WITH_META requires the signature: [metatab],[tabl]. `metatab` was of type: " .. type(meta)
     end
 
-    local meta, er2 = pull(re)
+    local tabl, er2 = pull(re)
     if er2 then
         return nil, "deserializers[TABLE_WITH_META] - " .. er2
     end
-    if type(meta) ~= "table"then
-        return nil, "TABLE_WITH_META requires the signature: [tabl],[metatab]. `metatab` was of type: " .. type(meta)
+    if type(tabl) ~= "table"then
+        return nil, "TABLE_WITH_META requires the signature: [metatab],[tabl]. `tabl` was of type: " .. type(tabl)
     end
     return setmetatable(tabl, meta)
 end
