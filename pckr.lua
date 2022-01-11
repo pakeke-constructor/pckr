@@ -49,7 +49,7 @@ local NUMBER = "\238"
 local NIL   = "\239"
 
 local TRUE  = "\240"
-local FALSE = "\215"
+local FALSE = "\241"
 
 local STRING = "\242"
 local STRING_REF_LEN = 4 -- strings must be at least X chars long 
@@ -86,6 +86,10 @@ local PREFIX = ">!1"
 -- unique values for equality checks
 local UNIQUE_TABLE_END = {}
 local UNIQUE_ARRAY_END = {}
+
+-- unique key for ref hashers.
+local COUNT = {"reference_counter"}
+
 
 
 
@@ -250,9 +254,9 @@ Serializers:
 
 local function add_ref(buffer, x)
     local refs = buffer.refs
-    local new_count = refs.count + 1
+    local new_count = refs[COUNT] + 1
     refs[x] = new_count
-    refs.count = new_count
+    refs[COUNT] = new_count
 end
 
 
@@ -278,6 +282,8 @@ local function try_push_resource(buffer, res)
     local alias = resource_to_alias[res]
     if alias then
         push(buffer, RESOURCE)
+        print("PUSHING RESOURCE OF ALIAS TYPE:: ", type(alias))
+        print("BUFFER.REFS:: ", inspect(buffer.refs))
         serializers[type(alias)](buffer, alias)
         return true
     end
@@ -303,11 +309,6 @@ setmetatable(serializers, {__index = function() return force_push_resource end})
 
 
 local function push_array_to_buffer(buffer, x)
-    -- `x` is array
-    if try_push_resource(buffer, x) then
-        return -- then the array is a resource; return.
-    end
-
     push(buffer, ARRAY)
     local arr_len = #x
     for i=1, arr_len do
@@ -317,13 +318,11 @@ local function push_array_to_buffer(buffer, x)
     return arr_len
 end
 
-
 local function should_skip(arr_len, key)
     -- returns whether this key should be skipped because it's in the array
     return arr_len and type(key) == "number" and 
                 floor(key) == key and key <= arr_len and key > 0
 end
-
 
 
 local function serialize_raw(buffer, x)
@@ -381,6 +380,8 @@ local function push_template(buffer, x, meta, arr_len)
 end
 
 
+
+
 local function serialize_user_type(buffer, x, meta)
     push(buffer, USER_TYPE)
     local fn = mt_to_custom_serial[meta]
@@ -411,10 +412,11 @@ end
 
 
 function serializers.table(buffer, x)
-    if buffer.refs[x] then
+    if resource_to_alias[x] and try_push_resource(buffer, x) then
+        -- (This first condition before the `and` is just a shortcut check, saves us a stack frame)
+        return -- It's a resource- hooray
+    elseif buffer.refs[x] then
         push_ref(buffer, buffer.refs[x])
-    elseif try_push_resource(buffer, x) then
-        return -- x is a resource. Hooray!
     else
         add_ref(buffer, x)
         local meta = getmetatable(x)
@@ -433,6 +435,14 @@ end
 
 serializers["nil"] = function(buffer, _)
     push(buffer, NIL)
+end
+
+serializers.boolean = function(buffer, x)
+    if x then
+        push(buffer, TRUE)
+    else
+        push(buffer, FALSE)
+    end
 end
 
 
@@ -562,10 +572,11 @@ end
 
 
 local function pull_ref(reader, x)
+    print("PULL REFERENCE:", inspect(x))
     -- adds a new reference to the reader.
     local refs = reader.refs
-    refs.count = refs.count + 1
-    refs[refs.count] = x
+    refs[COUNT] = refs[COUNT] + 1
+    refs[refs[COUNT]] = x
 end
 
 local function get_ref(reader, index)
@@ -687,7 +698,7 @@ end
 
 local ALLOWED_TOKENS_AFTER_ARRAY = {
     [TABLE] = true;
-    [TEMPLATE] = true
+    [TEMPLATE] = true;
 }
 
 deserializers[ARRAY] = function(re, mt_or_nil)
@@ -852,9 +863,69 @@ end
 
 
 
--- TODO: Do some thinking about what these functions should actually do.
-pckr.low.serialize_raw = 1-- serialize_raw
-pckr.low.deserialize_raw = 1-- deserializers[TABLE]
+--[[
+    planning for custom raw table serialization:
+
+    - Needs to ser with template
+    - Needs to ser with array
+    - Needs to ser with table
+    - doesn't care about meta!!!!
+]]
+
+local function low_serialize_shortcut(buffer, x)
+    if resource_to_alias[x] then
+        push(buffer, RESOURCE)
+        local alias = resource_to_alias[x]
+        serializers[type(alias)](buffer, alias)
+        return true
+    elseif buffer.refs[x] then
+        push_ref(buffer, buffer.refs[x])
+        return true
+    end
+    return false
+end
+
+pckr.low.serialize_raw = function(buffer, x, meta)
+    if mt_to_template[meta] then
+        local arr_len
+        if rawget(x, 1) then
+            arr_len = push_array_to_buffer(buffer, x)
+        end
+        push(buffer, TEMPLATE)
+        local template = mt_to_template[meta]
+        for i=1, #template do
+            local k = template[i]
+            if not should_skip(arr_len, k) then
+                local val = x[k]
+                serializers[type(val)](buffer, val)
+            end
+        end
+        push(buffer, TABLE_END)
+    else
+        serialize_raw(buffer, x)
+    end
+end
+
+pckr.low.deserialize_raw = function(reader, meta)
+    local token = popn(reader, 1)
+    local ret, er
+    if token == ARRAY then
+        ret, er = deserializers[ARRAY](reader, meta)
+    elseif token == TEMPLATE then
+        ret, er = deserializers[TEMPLATE](reader, nil, meta)
+    elseif token == TABLE then
+        ret, er = deserializers[TABLE](reader)
+    else
+        return nil, "pckr.low.deserialize_raw: Malformed data; expected to start data with ARRAY, TABLE, or TEMPLATE token."
+    end
+
+    if er then
+        return nil, er
+    else
+        setmetatable(ret, meta)
+    end
+    return ret
+end
 
 pckr.low.push = push
 pckr.low.pull = pull
@@ -873,7 +944,7 @@ pckr.low.U64 = "\237"
 pckr.low.NUMBER = "\238"
 pckr.low.NIL   = "\239"
 pckr.low.TRUE  = "\240"
-pckr.low.FALSE = "\215"
+pckr.low.FALSE = "\241"
 pckr.low.STRING = "\242"
 pckr.low.STRING_REF_LEN = 4
 pckr.low.TABLE_WITH_META = "\244" -- ( table // flat-table // array, metatable )
@@ -895,7 +966,7 @@ pckr.low.deserializers = deserializers
 local function newbuffer()
     local buffer = {
         len = 0;
-        refs = {count = 0} -- count = the number of references.
+        refs = {[COUNT] = 0} -- count = the number of references.
     }
     return buffer
 end
@@ -905,7 +976,7 @@ local function newreader(data)
     return {
         results = {};
 
-        refs = {count = 0}; -- [ref_num] --> object
+        refs = {[COUNT] = 0}; -- [ref_num] --> object
         
         data = data;
         index = 1

@@ -262,15 +262,39 @@ function(re, meta)
         return setmetatable({}, meta)
     end
 end)
-
 local a = setmetatable({}, custom_mt)
 check(a)
-
 pckr.unregister_all()
 end
 
 
 
+do
+pckr.register(math, "abcdef")
+check({math, 1, math})
+pckr.unregister_all()
+end
+
+
+print(string.rep("\n", 10))
+
+
+do
+local custom_mt = {}
+pckr.register(custom_mt, "custom 2")
+pckr.low.set_custom_functions(custom_mt, pckr.low.serialize_raw, pckr.low.deserialize_raw)
+pckr.low.set_template(custom_mt, {"foo", "bar", "foobar", "lll", "nine"})
+
+local a = setmetatable({
+    foo = "foo";
+    bar =  {{{{}}}};
+    foobar = {custom_mt};
+    lll = 4098450293845;
+    nine = 999.39485
+}, custom_mt)
+check(a)
+pckr.unregister_all()
+end
 
 
 
