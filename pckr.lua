@@ -262,7 +262,7 @@ end
 
 
 
-local function push(buffer, x)
+local function push_str(buffer, x)
     -- pushes `x` onto the buffer
     local newlen = buffer.len + 1
     buffer[newlen] = x
@@ -272,8 +272,13 @@ end
 
 
 local function push_ref(buffer, ref_num)
-    push(buffer, REF)
+    push_str(buffer, REF)
     serializers.number(buffer, ref_num)
+end
+
+
+local function push(buffer, x)
+    serializers[type(x)](buffer, x)
 end
 
 
@@ -281,9 +286,7 @@ end
 local function try_push_resource(buffer, res)
     local alias = resource_to_alias[res]
     if alias then
-        push(buffer, RESOURCE)
-        print("PUSHING RESOURCE OF ALIAS TYPE:: ", type(alias))
-        print("BUFFER.REFS:: ", inspect(buffer.refs))
+        push_str(buffer, RESOURCE)
         serializers[type(alias)](buffer, alias)
         return true
     end
@@ -309,12 +312,12 @@ setmetatable(serializers, {__index = function() return force_push_resource end})
 
 
 local function push_array_to_buffer(buffer, x)
-    push(buffer, ARRAY)
+    push_str(buffer, ARRAY)
     local arr_len = #x
     for i=1, arr_len do
         serializers[type(x[i])](buffer, x[i])
     end
-    push(buffer, ARRAY_END)
+    push_str(buffer, ARRAY_END)
     return arr_len
 end
 
@@ -331,14 +334,14 @@ local function serialize_raw(buffer, x)
         arr_len = push_array_to_buffer(buffer, x)
     end
 
-    push(buffer, TABLE)
+    push_str(buffer, TABLE)
     for k,v in pairs(x) do
         if not should_skip(arr_len, k) then
             serializers[type(k)](buffer, k)
             serializers[type(v)](buffer, v)
         end
     end
-    push(buffer, TABLE_END)
+    push_str(buffer, TABLE_END)
 end
 
 
@@ -361,13 +364,13 @@ note that template can't have regular keys afterwards
 ]]
 
 local function push_template(buffer, x, meta, arr_len)
-    push(buffer, TABLE)
-    push(buffer, TABLE_END)
+    push_str(buffer, TABLE)
+    push_str(buffer, TABLE_END)
     -- gotta push this to inform deserializer that the metatable isn't
 
     serializers.table(buffer, meta)
 
-    push(buffer, TEMPLATE)
+    push_str(buffer, TEMPLATE)
     local template = mt_to_template[meta]
     for i=1, #template do
         local k = template[i]
@@ -376,14 +379,14 @@ local function push_template(buffer, x, meta, arr_len)
             serializers[type(val)](buffer, val)
         end
     end
-    push(buffer, TABLE_END)
+    push_str(buffer, TABLE_END)
 end
 
 
 
 
 local function serialize_user_type(buffer, x, meta)
-    push(buffer, USER_TYPE)
+    push_str(buffer, USER_TYPE)
     local fn = mt_to_custom_serial[meta]
     try_push_resource(buffer, meta) -- this will always succeed,
     -- due to the nature of low level registering.
@@ -394,7 +397,7 @@ end
 
 
 local function serialize_with_meta(buffer, x, meta)
-    push(buffer, TABLE_WITH_META)
+    push_str(buffer, TABLE_WITH_META)
 
     if mt_to_template[meta] then
         local arr_len = nil
@@ -434,14 +437,14 @@ end
 
 
 serializers["nil"] = function(buffer, _)
-    push(buffer, NIL)
+    push_str(buffer, NIL)
 end
 
 serializers.boolean = function(buffer, x)
     if x then
-        push(buffer, TRUE)
+        push_str(buffer, TRUE)
     else
-        push(buffer, FALSE)
+        push_str(buffer, FALSE)
     end
 end
 
@@ -461,28 +464,28 @@ function serializers.number(buffer, x)
         if x > 0 then
             -- serialize unsigned
             if x < MAX_USMALL then
-                push(buffer, sUSMALL(x))
+                push_str(buffer, sUSMALL(x))
             elseif x < (2^32 - 1) then
-                push(buffer, U32)
-                push(buffer, sU32(x))
+                push_str(buffer, U32)
+                push_str(buffer, sU32(x))
             else -- x is U64
-                push(buffer, U64)
-                push(buffer, sU64(x))
+                push_str(buffer, U64)
+                push_str(buffer, sU64(x))
             end
         else
             -- serialize signed
             local mag = abs(x)
             if mag < (2 ^ 31 - 2) then -- 32 bit signed num
-                push(buffer, I32)
-                push(buffer, sI32(x))
+                push_str(buffer, I32)
+                push_str(buffer, sI32(x))
             else
-                push(buffer, I64) -- else its 64 bit.
-                push(buffer, sI64(x))
+                push_str(buffer, I64) -- else its 64 bit.
+                push_str(buffer, sI64(x))
             end
         end
     else
-        push(buffer, NUMBER)
-        push(buffer, sN(x))
+        push_str(buffer, NUMBER)
+        push_str(buffer, sN(x))
     end
 end
 
@@ -496,10 +499,10 @@ function serializers.string(buffer, x)
     if buffer.refs[x] then
         push_ref(buffer, buffer.refs[x])
     else
-        push(buffer, STRING)
+        push_str(buffer, STRING)
         local slen = len(x)
         serializers.number(buffer, slen)
-        push(buffer, x)
+        push_str(buffer, x)
 
         if slen >= STRING_REF_LEN then
             add_ref(buffer, x)
@@ -545,6 +548,7 @@ local function peek(reader)
 end
 
 
+local deserializers_USMALL = deserializers[USMALL]
 
 local function pull(reader)
     local i = reader.index
@@ -553,7 +557,7 @@ local function pull(reader)
         return nil, "pull(re) ran out of data; (serialization data too short of malformed)"
     end
     if ccode <= USMALL_NUM then
-        return deserializers[USMALL](reader)
+        return deserializers_USMALL(reader)
     end
 
     local chr = sub(reader.data, i, i)
@@ -572,7 +576,6 @@ end
 
 
 local function pull_ref(reader, x)
-    print("PULL REFERENCE:", inspect(x))
     -- adds a new reference to the reader.
     local refs = reader.refs
     refs[COUNT] = refs[COUNT] + 1
@@ -701,14 +704,17 @@ local ALLOWED_TOKENS_AFTER_ARRAY = {
     [TEMPLATE] = true;
 }
 
-deserializers[ARRAY] = function(re, mt_or_nil)
+local tinsert = table.insert
+
+deserializers[ARRAY] = function(re, tabl, mt_or_nil)
     -- Remember for an array: 
     -- TABLE, TEMPLATE, or TABLE_END could all follow!
     -- We must account for that; `ARRAY` should automatically pull these extra
     -- headers.
-    local tabl = {}
-    pull_ref(re, tabl)
-    local tinsert = table.insert
+    if not tabl then
+        tabl = {}
+        pull_ref(re, tabl)
+    end
 
     while true do
         local x, err = pull(re)
@@ -845,6 +851,9 @@ end
 
 
 deserializers[USER_TYPE] = function(re)
+    local user_obj = {}
+    pull_ref(re, user_obj)
+
     local meta, er1 = pull(re)
     if er1 then
         return nil, "deserializers[USER_TYPE] error in first pull - " .. er1
@@ -858,7 +867,7 @@ deserializers[USER_TYPE] = function(re)
         return nil, "deserializers[USER_TYPE] - custom USER_TYPE not registered: " .. tostring(meta) .. ". Did you make sure to set serialization functions and register it?"
     end
 
-    return fn(re, meta)
+    return fn(re, user_obj, meta)
 end
 
 
@@ -871,27 +880,13 @@ end
     - Needs to ser with table
     - doesn't care about meta!!!!
 ]]
-
-local function low_serialize_shortcut(buffer, x)
-    if resource_to_alias[x] then
-        push(buffer, RESOURCE)
-        local alias = resource_to_alias[x]
-        serializers[type(alias)](buffer, alias)
-        return true
-    elseif buffer.refs[x] then
-        push_ref(buffer, buffer.refs[x])
-        return true
-    end
-    return false
-end
-
 pckr.low.serialize_raw = function(buffer, x, meta)
     if mt_to_template[meta] then
         local arr_len
         if rawget(x, 1) then
             arr_len = push_array_to_buffer(buffer, x)
         end
-        push(buffer, TEMPLATE)
+        push_str(buffer, TEMPLATE)
         local template = mt_to_template[meta]
         for i=1, #template do
             local k = template[i]
@@ -900,21 +895,21 @@ pckr.low.serialize_raw = function(buffer, x, meta)
                 serializers[type(val)](buffer, val)
             end
         end
-        push(buffer, TABLE_END)
+        push_str(buffer, TABLE_END)
     else
         serialize_raw(buffer, x)
     end
 end
 
-pckr.low.deserialize_raw = function(reader, meta)
+pckr.low.deserialize_raw = function(reader, tabl, meta)
     local token = popn(reader, 1)
     local ret, er
     if token == ARRAY then
-        ret, er = deserializers[ARRAY](reader, meta)
+        ret, er = deserializers[ARRAY](reader, tabl, meta)
     elseif token == TEMPLATE then
-        ret, er = deserializers[TEMPLATE](reader, nil, meta)
+        ret, er = deserializers[TEMPLATE](reader, tabl, meta)
     elseif token == TABLE then
-        ret, er = deserializers[TABLE](reader)
+        ret, er = deserializers[TABLE](reader, tabl)
     else
         return nil, "pckr.low.deserialize_raw: Malformed data; expected to start data with ARRAY, TABLE, or TEMPLATE token."
     end

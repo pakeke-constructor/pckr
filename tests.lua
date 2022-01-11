@@ -276,11 +276,10 @@ pckr.unregister_all()
 end
 
 
-print(string.rep("\n", 10))
 
 
 do
-local custom_mt = {}
+local custom_mt = {"SHOULDN'T_BE_REFFED"}
 pckr.register(custom_mt, "custom 2")
 pckr.low.set_custom_functions(custom_mt, pckr.low.serialize_raw, pckr.low.deserialize_raw)
 pckr.low.set_template(custom_mt, {"foo", "bar", "foobar", "lll", "nine"})
@@ -295,6 +294,9 @@ local a = setmetatable({
 check(a)
 pckr.unregister_all()
 end
+
+
+
 
 
 
