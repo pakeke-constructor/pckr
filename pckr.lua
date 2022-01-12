@@ -421,15 +421,16 @@ function serializers.table(buffer, x)
     elseif buffer.refs[x] then
         push_ref(buffer, buffer.refs[x])
     else
-        add_ref(buffer, x)
         local meta = getmetatable(x)
         if meta then
             if mt_to_custom_serial[meta] then
                 serialize_user_type(buffer, x, meta)
             else
+                add_ref(buffer, x)
                 serialize_with_meta(buffer, x, meta)
             end
         else
+            add_ref(buffer, x)
             serialize_raw(buffer, x)
         end
     end
@@ -548,7 +549,6 @@ local function peek(reader)
 end
 
 
-local deserializers_USMALL = deserializers[USMALL]
 
 local function pull(reader)
     local i = reader.index
@@ -557,7 +557,7 @@ local function pull(reader)
         return nil, "pull(re) ran out of data; (serialization data too short of malformed)"
     end
     if ccode <= USMALL_NUM then
-        return deserializers_USMALL(reader)
+        return deserializers[USMALL](reader)
     end
 
     local chr = sub(reader.data, i, i)
@@ -851,9 +851,6 @@ end
 
 
 deserializers[USER_TYPE] = function(re)
-    local user_obj = {}
-    pull_ref(re, user_obj)
-
     local meta, er1 = pull(re)
     if er1 then
         return nil, "deserializers[USER_TYPE] error in first pull - " .. er1
@@ -867,7 +864,7 @@ deserializers[USER_TYPE] = function(re)
         return nil, "deserializers[USER_TYPE] - custom USER_TYPE not registered: " .. tostring(meta) .. ". Did you make sure to set serialization functions and register it?"
     end
 
-    return fn(re, user_obj, meta)
+    return fn(re, meta)
 end
 
 
@@ -901,8 +898,10 @@ pckr.low.serialize_raw = function(buffer, x, meta)
     end
 end
 
-pckr.low.deserialize_raw = function(reader, tabl, meta)
+pckr.low.deserialize_raw = function(reader, meta)
     local token = popn(reader, 1)
+    local tabl = {}
+    pull_ref(reader, tabl)
     local ret, er
     if token == ARRAY then
         ret, er = deserializers[ARRAY](reader, tabl, meta)
